@@ -5,3 +5,5 @@ python -m venv venv
 pip install -r requirements.txt
 
 python -m src.main
+
+Plik mp4 dodajemy jako data/videos/video.mp4
