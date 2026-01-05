@@ -4,6 +4,6 @@ __pycache__/
 *.pyc
 
 data/videos/*.mp4
-  
+vscode/
 .DS_Store
 Thumbs.db
