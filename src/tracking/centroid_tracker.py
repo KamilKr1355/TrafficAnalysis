@@ -1,38 +1,51 @@
-import math
+import numpy as np
+import pandas as pd
+import warnings
+
+warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 class CentroidTracker:
-    def __init__(self, max_distance=50):
-        self.next_id = 0
-        self.objects = {}
-        self.max_distance = max_distance
+    def __init__(self, max_frames, max_radius=50):
+        self.df = pd.DataFrame(index=range(int(max_frames)))
+        self.car_ids = []
+        self.total_cars = 0
+        self.max_radius = max_radius
 
-    def _distance(self, c1, c2):
-        return math.hypot(c1[0] - c2[0], c1[1] - c2[1])
+    def update(self, frame_idx, current_centroids):
+        cxx = [c[0] for c in current_centroids]
+        cyy = [c[1] for c in current_centroids]
+        used_indices = []
 
-    def update(self, detections):
-        updated_objects = {}
+        if frame_idx == 0 or not self.car_ids:
+            for i in range(len(cxx)):
+                self._add_new_car(frame_idx, cxx[i], cyy[i])
+            return
 
-        for (x, y, w, h) in detections:
-            cx = x + w // 2
-            cy = y + h // 2
-            matched_id = None
+        for car_id in self.car_ids:
+            prev_pos = self.df.at[frame_idx - 1, str(car_id)]
+            if prev_pos == '' or prev_pos is None or (isinstance(prev_pos, float) and np.isnan(prev_pos)):
+                continue
+            
+            distances = [np.sqrt((prev_pos[0]-cx)**2 + (prev_pos[1]-cy)**2) for cx, cy in zip(cxx, cyy)]
+            if distances:
+                min_idx = np.argmin(distances)
+                if distances[min_idx] < self.max_radius and min_idx not in used_indices:
+                    self.df.at[frame_idx, str(car_id)] = [cxx[min_idx], cyy[min_idx]]
+                    used_indices.append(min_idx)
 
-            for obj_id, obj in self.objects.items():
-                if self._distance((cx, cy), obj["centroid"]) < self.max_distance:
-                    matched_id = obj_id
-                    break
+        for i in range(len(cxx)):
+            if i not in used_indices:
+                self._add_new_car(frame_idx, cxx[i], cyy[i])
 
-            if matched_id is None:
-                updated_objects[self.next_id] = {
-                    "centroid": (cx, cy),
-                    "history": [(cx, cy)]
-                }
-                self.next_id += 1
-            else:
-                updated_objects[matched_id] = {
-                    "centroid": (cx, cy),
-                    "history": self.objects[matched_id]["history"] + [(cx, cy)]
-                }
+    def _add_new_car(self, frame_idx, x, y):
+        new_id = str(self.total_cars)
+        self.df[new_id] = ""
+        self.df.at[frame_idx, new_id] = [x, y]
+        self.car_ids.append(self.total_cars)
+        self.total_cars += 1
+        if self.total_cars % 50 == 0: self.df = self.df.copy()
 
-        self.objects = updated_objects
-        return self.objects
+    def get_pos(self, frame_idx, car_id):
+        if frame_idx < 0: return None
+        if str(car_id) not in self.df.columns: return None
+        return self.df.at[frame_idx, str(car_id)]
