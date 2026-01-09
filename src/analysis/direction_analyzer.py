@@ -2,59 +2,51 @@ import pandas as pd
 
 class DirectionAnalyzer:
     def __init__(self, lines_config):
-        self.lines = lines_config 
-        self.counts = {'up': 0, 'down': 0, 'left': 0, 'right': 0}
+        self.lines = lines_config
+        self.counts = {d: {'OSOBOWY': 0, 'CIEZAROWY': 0, 'BUS': 0, 'JEDNOSLAD': 0} for d in ['UP', 'DOWN', 'LEFT', 'RIGHT']}
         self.car_states = {} 
+        self.car_labels = {} 
+        self.best_crops = {} 
         self.counted_ids = set()
-        self.events = [] # Lista do przechowywania sensownych danych (logów)
+        self.events = []
 
-    def check_crossing(self, car_id, pos, frame_idx, fps):
-        if car_id in self.counted_ids:
-            return
-
+    def check_crossing(self, car_id, p_pos, c_pos, bbox, frame, detector, frame_idx, fps):
+        if car_id in self.counted_ids or p_pos is None: return None
         if car_id not in self.car_states:
-            self.car_states[car_id] = {'up': 'none', 'down': 'none', 'left': 'none', 'right': 'none'}
+            self.car_states[car_id] = {d: 'none' for d in self.counts.keys()}
 
-        x, y = pos
+        px, py, cx, cy = p_pos[0], p_pos[1], c_pos[0], c_pos[1]
         s = self.car_states[car_id]
-        time_sec = round(frame_idx / fps, 2)
 
-        # Logika sprawdzania kierunków z blokadą "invalid"
-        for direction in ['up', 'down', 'left', 'right']:
-            if s[direction] == 'invalid': continue
-
-            # Parametry osiowe w zależności od kierunku
-            val = y if direction in ['up', 'down'] else x
-            outer = self.lines[direction]['outer']
-            inner = self.lines[direction]['inner']
+        for d in self.counts.keys():
+            if s[d] == 'invalid': continue
+            val_p, val_c = (py, cy) if d in ['UP', 'DOWN'] else (px, cx)
+            out, inn = self.lines[d.lower()]['outer'], self.lines[d.lower()]['inner']
             
-            # Warunek przekroczenia (rosnąco lub malejąco)
-            is_beyond_outer = val < outer if direction in ['up', 'left'] else val > outer
-            is_beyond_inner = val < inner if direction in ['up', 'left'] else val > inner
+            # 1. Strefa gotowości (inner)
+            if s[d] == 'none':
+                if (val_p >= inn > val_c if d in ['UP', 'LEFT'] else val_p <= inn < val_c):
+                    s[d] = 'ready'
 
-            if is_beyond_outer and s[direction] != 'ready':
-                s[direction] = 'invalid'
-            elif is_beyond_inner and s[direction] == 'none':
-                s[direction] = 'ready'
-            elif is_beyond_outer and s[direction] == 'ready':
-                self.counts[direction] += 1
-                self.counted_ids.add(car_id)
-                # ZAPISUJEMY SENZOWNE DANE:
-                self.events.append({
-                    'ID': car_id,
-                    'Kierunek': direction.upper(),
-                    'Sekunda': time_sec,
-                    'Klatka': frame_idx
-                })
+            # 2. Aktywne szukanie najlepszego zdjęcia
+            if s[d] == 'ready':
+                label, crop = detector.classify_and_crop(frame, bbox)
+                if label in ['CIEZAROWY', 'BUS'] or car_id not in self.car_labels:
+                    self.car_labels[car_id], self.best_crops[car_id] = label, crop
 
-    def save_results(self, output_path_summary, output_path_log):
-        # 1. Zapisujemy podsumowanie (ile aut gdzie)
-        summary_data = {
-            'Kierunek': [k.upper() for k in self.counts.keys()],
-            'Suma_Pojazdow': list(self.counts.values())
-        }
-        pd.DataFrame(summary_data).to_csv(output_path_summary, index=False)
-        
-        # 2. Zapisujemy szczegółowy log zdarzeń (co i kiedy)
-        if self.events:
-            pd.DataFrame(self.events).to_csv(output_path_log, index=False)
+                # 3. Zliczenie (outer)
+                if (val_p >= out > val_c if d in ['UP', 'LEFT'] else val_p <= out < val_c):
+                    lbl = self.car_labels.get(car_id, "OSOBOWY")
+                    crp = self.best_crops.get(car_id, crop)
+                    self.counts[d][lbl] += 1
+                    self.counted_ids.add(car_id)
+                    self.events.append({'ID': car_id, 'Typ': lbl, 'Kierunek': d, 'Czas': round(frame_idx/fps, 2)})
+                    return crp
+        return None
+
+    def save_results(self, path_sum, path_log):
+        res = []
+        for d, t in self.counts.items():
+            row = {'Kierunek': d}; row.update(t); res.append(row)
+        pd.DataFrame(res).to_csv(path_sum, index=False)
+        if self.events: pd.DataFrame(self.events).to_csv(path_log, index=False)

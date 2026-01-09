@@ -5,47 +5,51 @@ import warnings
 warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 class CentroidTracker:
-    def __init__(self, max_frames, max_radius=50):
+    def __init__(self, max_frames, max_radius=120):
+        self.max_radius = max_radius 
         self.df = pd.DataFrame(index=range(int(max_frames)))
-        self.car_ids = []
+        self.active_cars_pos = {}
         self.total_cars = 0
-        self.max_radius = max_radius
+        self.disappeared = {}
+        self.max_disappeared = 12 
 
-    def update(self, frame_idx, current_centroids):
-        cxx = [c[0] for c in current_centroids]
-        cyy = [c[1] for c in current_centroids]
+    def update(self, frame_idx, current_detections):
+        cxx = [d['pos'][0] for d in current_detections]
+        cyy = [d['pos'][1] for d in current_detections]
         used_indices = []
 
-        if frame_idx == 0 or not self.car_ids:
-            for i in range(len(cxx)):
-                self._add_new_car(frame_idx, cxx[i], cyy[i])
+        if not self.active_cars_pos:
+            for det in current_detections:
+                self._add_new_car(frame_idx, det['pos'][0], det['pos'][1])
             return
 
-        for car_id in self.car_ids:
-            prev_pos = self.df.at[frame_idx - 1, str(car_id)]
-            if prev_pos == '' or prev_pos is None or (isinstance(prev_pos, float) and np.isnan(prev_pos)):
-                continue
-            
+        ids = list(self.active_cars_pos.keys())
+        for car_id in ids:
+            prev_pos = self.active_cars_pos[car_id]
             distances = [np.sqrt((prev_pos[0]-cx)**2 + (prev_pos[1]-cy)**2) for cx, cy in zip(cxx, cyy)]
+            
             if distances:
-                min_idx = np.argmin(distances)
-                if distances[min_idx] < self.max_radius and min_idx not in used_indices:
-                    self.df.at[frame_idx, str(car_id)] = [cxx[min_idx], cyy[min_idx]]
-                    used_indices.append(min_idx)
+                m_idx = np.argmin(distances)
+                if distances[m_idx] < self.max_radius and m_idx not in used_indices:
+                    self.active_cars_pos[car_id] = [cxx[m_idx], cyy[m_idx]]
+                    self.df.at[frame_idx, str(car_id)] = [cxx[m_idx], cyy[m_idx]]
+                    self.disappeared[car_id] = 0
+                    used_indices.append(m_idx)
+                else: self.disappeared[car_id] = self.disappeared.get(car_id, 0) + 1
+            else: self.disappeared[car_id] = self.disappeared.get(car_id, 0) + 1
 
-        for i in range(len(cxx)):
+            if self.disappeared.get(car_id, 0) > self.max_disappeared:
+                del self.active_cars_pos[car_id]
+                del self.disappeared[car_id]
+
+        for i, det in enumerate(current_detections):
             if i not in used_indices:
-                self._add_new_car(frame_idx, cxx[i], cyy[i])
+                self._add_new_car(frame_idx, det['pos'][0], det['pos'][1])
 
     def _add_new_car(self, frame_idx, x, y):
         new_id = str(self.total_cars)
         self.df[new_id] = ""
         self.df.at[frame_idx, new_id] = [x, y]
-        self.car_ids.append(self.total_cars)
+        self.active_cars_pos[int(new_id)] = [x, y]
         self.total_cars += 1
         if self.total_cars % 50 == 0: self.df = self.df.copy()
-
-    def get_pos(self, frame_idx, car_id):
-        if frame_idx < 0: return None
-        if str(car_id) not in self.df.columns: return None
-        return self.df.at[frame_idx, str(car_id)]
