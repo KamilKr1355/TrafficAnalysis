@@ -41,9 +41,6 @@ def main():
         if first_frame_bg is None:
             first_frame_bg = frame.copy()
 
-        if frame_idx % 2 != 0: # Skok dla wydajności
-            frame_idx += 1; continue
-
         blobs, debug_mask = det.get_blobs(frame)
         trk.update(frame_idx, blobs)
 

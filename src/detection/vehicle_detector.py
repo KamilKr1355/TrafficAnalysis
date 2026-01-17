@@ -7,7 +7,7 @@ class VehicleDetector:
     def __init__(self):
         self.fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
         self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        self.yolo = YOLO('yolov8n.pt')
+        self.yolo = YOLO("yolov8n.pt") 
         # Mapowanie klas YOLO na Twoje kategorie
         self.class_map = {1: 'JEDNOSLAD', 2: 'OSOBOWY', 3: 'JEDNOSLAD', 5: 'BUS', 7: 'CIEZAROWY'}
 
@@ -15,10 +15,12 @@ class VehicleDetector:
         """Szybkie wykrywanie ruchu (MOG2)"""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fgmask = self.fgbg.apply(gray)
-        _, bins = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
-        dilation = cv2.dilate(bins, self.kernel, iterations=2)
-        contours, _ = cv2.findContours(dilation, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        closing = cv2.morphologyEx(fgmask, cv2.MORPH_CLOSE, self.kernel)
+        opening = cv2.morphologyEx(closing, cv2.MORPH_OPEN, self.kernel)
+        dilation = cv2.dilate(opening, self.kernel, iterations=2)
+        _, bins = cv2.threshold(dilation, 220, 255, cv2.THRESH_BINARY)
         
+        contours, _ = cv2.findContours(bins, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         blobs = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -34,27 +36,41 @@ class VehicleDetector:
         """AI analizuje wycinek i zwraca najlepszą klatkę"""
         x, y, w, h = bbox
         # PANORAMA: Bardzo szerokie pole dla ciężarówek
-        pad_h = int(h * 1.2)
-        pad_w = int(w * 1.2)
+        pad_h = int(h * 1.6)
+        pad_w = int(w * 1.6)
         
         y1, y2 = max(0, y), min(frame.shape[0], y+pad_h)
-        x1, x2 = max(0, x), min(frame.shape[1]+w, x+pad_w)
+        x1, x2 = max(0, x), min(frame.shape[1], x+pad_w)
         roi = frame[y1:y2, x1:x2]
         
         if roi.size == 0: return "OSOBOWY", None
 
-        results = self.yolo(roi, verbose=False, conf=0.15)[0]
+        results = self.yolo(roi, conf=0.15, classes=[1,2,3,5,7], verbose=False)[0]
         label = "OSOBOWY"
-        max_conf = 0
+        max_conf = 0.0
+
         for box in results.boxes:
             c_id = int(box.cls[0])
             conf = box.conf[0].item()
-            if c_id in self.class_map:
-                boost = 1.5 if c_id in [5, 7] else 1.0
-                if (conf * boost) > max_conf:
-                    max_conf = conf * boost
-                    label = self.class_map[c_id]
+
+            if c_id not in self.class_map:
+                continue
+
+            candidate = self.class_map[c_id]
+
+            if candidate == "CIEZAROWY":
+                if w < 260 or h < 180:
+                    continue
+
+            if candidate == "BUS":
+                if w < 230 or h < 200:
+                    continue
+
+            if conf > max_conf:
+                max_conf = conf
+                label = candidate
 
         # Fail-safe dla wielkich naczep
-        #if w > 280 and label == "OSOBOWY": label = "CIEZAROWY"
+        if (w > 280 or h > 280) and label == "OSOBOWY": 
+            label = "CIEZAROWY"
         return label, roi
